@@ -4,46 +4,26 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>RDG Command Center</title>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet" />
   <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background: #0F1117; }
-    input, select, button, textarea { font-family: inherit; }
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: #0B0D12; color: #FAFAF7; font-family: 'DM Sans', sans-serif; min-height: 100vh; }
+    #root { min-height: 100vh; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: rgba(255,255,255,0.02); }
+    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.18); }
+    input, select, button, textarea { font-family: 'DM Sans', sans-serif; }
   </style>
+  <!-- React 18 + Babel standalone for JSX -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 </head>
 <body>
   <div id="root"></div>
-
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
-
-  <script>
-    // ── localStorage-backed storage polyfill ──
-    // Replaces window.storage from the Claude artifacts environment
-    window.storage = {
-      get: async function(key) {
-        var val = localStorage.getItem(key);
-        if (val === null) throw new Error("Key not found: " + key);
-        return { key: key, value: val, shared: false };
-      },
-      set: async function(key, value) {
-        try { localStorage.setItem(key, value); } catch(e) { return null; }
-        return { key: key, value: value, shared: false };
-      },
-      delete: async function(key) {
-        localStorage.removeItem(key);
-        return { key: key, deleted: true, shared: false };
-      },
-      list: async function(prefix) {
-        var keys = Object.keys(localStorage).filter(function(k) {
-          return !prefix || k.startsWith(prefix);
-        });
-        return { keys: keys, prefix: prefix, shared: false };
-      }
-    };
-  </script>
-
   <script type="text/babel">
     const { useState, useEffect, useCallback } = React;
 
@@ -1577,6 +1557,10 @@ function Dashboard() {
   const [caDeliverablesExpanded, setCaDeliverablesExpanded] = useState({});
   const [caAddingType, setCaAddingType] = useState(null);
   const [caAddDraft, setCaAddDraft] = useState({ subject: "", dueDate: "" });
+  const [caConfirmProjectId, setCaConfirmProjectId] = useState(null);
+  const [revertConfirmProjectId, setRevertConfirmProjectId] = useState(null);
+  const [editingDeliverable, setEditingDeliverable] = useState(null); // { projectId, index }
+  const [deliverableDraft, setDeliverableDraft] = useState({ name: "", due: "", notes: "" });
 
   // ── Google Calendar live fetch ──
   const fetchCalendarEvents = useCallback(async () => {
@@ -1694,7 +1678,7 @@ Rules:
   const acceptSuggestion = (suggId) => {
     const sugg = calSyncSuggestions.find(s => s.id === suggId);
     if (!sugg || !calSyncProjectId) return;
-    const newDeliverable = { name: sugg.title, due: sugg.date, status: sugg.date < new Date().toISOString().split("T")[0] ? "complete" : "upcoming" };
+    const newDeliverable = { name: sugg.title, due: sugg.date, status: sugg.date < new Date().toISOString().split("T")[0] ? "complete" : "upcoming", fromCalendar: true };
     setProjects(prev => prev.map(p => {
       if (p.id !== calSyncProjectId) return p;
       const merged = [...(p.deliverables || []), newDeliverable].sort((a, b) => a.due < b.due ? -1 : 1);
@@ -1709,9 +1693,18 @@ Rules:
 
   const enterCaPhase = (projectId) => {
     setProjects(prev => prev.map(p => p.id === projectId
-      ? { ...p, phase: "Construction Admin", status: "on-track", caItems: p.caItems || [] }
+      ? { ...p, previousPhase: p.phase, phase: "Construction Admin", status: "on-track", caItems: p.caItems || [] }
       : p
     ));
+    setCaConfirmProjectId(null);
+  };
+
+  const revertToDesignPhase = (projectId) => {
+    setProjects(prev => prev.map(p => p.id === projectId
+      ? { ...p, phase: p.previousPhase || "Construction Documents", previousPhase: null }
+      : p
+    ));
+    setRevertConfirmProjectId(null);
   };
 
   const addCaItem = (projectId, type) => {
@@ -1740,6 +1733,19 @@ Rules:
       ...p,
       caItems: (p.caItems || []).map(i => i.id === itemId ? { ...i, status: newStatus } : i),
     }));
+  };
+
+  const saveDeliverableEdit = () => {
+    if (!editingDeliverable) return;
+    const { projectId, index } = editingDeliverable;
+    setProjects(prev => prev.map(p => {
+      if (p.id !== projectId) return p;
+      const updated = (p.deliverables || []).map((d, i) =>
+        i === index ? { ...d, name: deliverableDraft.name, due: deliverableDraft.due, notes: deliverableDraft.notes } : d
+      );
+      return { ...p, deliverables: updated };
+    }));
+    setEditingDeliverable(null);
   };
 
 
@@ -1931,7 +1937,7 @@ Rules:
   const remainingTodos = todos.filter(t => !t.done).length;
 
   // Close team editor when project selection changes
-  useEffect(() => { setEditingProjectTeam(false); setConfirmDeleteId(null); }, [selectedProject]);
+  useEffect(() => { setEditingProjectTeam(false); setConfirmDeleteId(null); setCaConfirmProjectId(null); setRevertConfirmProjectId(null); setEditingDeliverable(null); }, [selectedProject]);
   const selectedProjectData = projects.find(p => p.id === selectedProject);
 
   return (
@@ -1942,6 +1948,7 @@ Rules:
       fontFamily: "'DM Sans', 'Helvetica Neue', sans-serif",
       position: "relative", overflow: "hidden",
     }}>
+      <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
       <div style={{ position: "fixed", inset: 0, backgroundImage: "linear-gradient(rgba(255,255,255,0.015) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.015) 1px, transparent 1px)", backgroundSize: "60px 60px", pointerEvents: "none", zIndex: 0 }} />
       <div style={{ position: "fixed", top: "-20%", right: "-10%", width: "600px", height: "600px", background: "radial-gradient(circle, rgba(232,200,114,0.04) 0%, transparent 70%)", pointerEvents: "none", zIndex: 0 }} />
 
@@ -2185,12 +2192,38 @@ Rules:
                 </div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "16px", marginBottom: "20px", paddingBottom: "20px", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
                   <div>
-                    <div style={{ fontFamily: "'Space Mono', monospace", fontSize: "9px", letterSpacing: "2px", color: "rgba(255,255,255,0.3)", textTransform: "uppercase", marginBottom: "4px" }}>Phase</div>
-                    <div style={{ fontSize: "14px", fontWeight: "500", display: "flex", alignItems: "center", gap: "8px" }}>
-                      {selectedProjectData.phase === "Construction Admin"
-                        ? <><span style={{ color: "#4ADE80", background: "rgba(74,222,128,0.1)", border: "1px solid rgba(74,222,128,0.25)", borderRadius: "6px", padding: "2px 8px", fontSize: "12px", fontFamily: "'Space Mono', monospace", letterSpacing: "1px" }}>CA</span><span style={{ fontSize: "12px", color: "rgba(255,255,255,0.5)" }}>Construction Admin</span></>
-                        : selectedProjectData.phase}
-                    </div>
+                    <div style={{ fontFamily: "'Space Mono', monospace", fontSize: "9px", letterSpacing: "2px", color: "rgba(255,255,255,0.3)", textTransform: "uppercase", marginBottom: "6px" }}>Phase</div>
+                    {selectedProjectData.phase === "Construction Admin" ? (
+                      <div style={{ fontSize: "14px", fontWeight: "500", display: "flex", alignItems: "center", gap: "8px" }}>
+                        <span style={{ color: "#4ADE80", background: "rgba(74,222,128,0.1)", border: "1px solid rgba(74,222,128,0.25)", borderRadius: "6px", padding: "2px 8px", fontSize: "12px", fontFamily: "'Space Mono', monospace", letterSpacing: "1px" }}>CA</span>
+                        <span style={{ fontSize: "12px", color: "rgba(255,255,255,0.5)" }}>Construction Admin</span>
+                      </div>
+                    ) : (
+                      <div style={{ display: "flex", gap: "4px", flexWrap: "wrap" }}>
+                        {[
+                          { label: "Prog", value: "Programming" },
+                          { label: "SD", value: "Schematic Design" },
+                          { label: "DD", value: "Design Development" },
+                          { label: "CD", value: "Construction Documents" },
+                        ].map(ph => {
+                          const isActive = selectedProjectData.phase === ph.value;
+                          return (
+                            <button key={ph.value} onClick={() => updateProjectField(selectedProjectData.id, { phase: ph.value })} style={{
+                              background: isActive ? "rgba(232,200,114,0.18)" : "rgba(255,255,255,0.04)",
+                              border: `1px solid ${isActive ? "rgba(232,200,114,0.45)" : "rgba(255,255,255,0.08)"}`,
+                              borderRadius: "6px", padding: "3px 8px", cursor: "pointer",
+                              fontFamily: "'Space Mono', monospace", fontSize: "9px", letterSpacing: "1px",
+                              color: isActive ? "#E8C872" : "rgba(255,255,255,0.35)",
+                              fontWeight: isActive ? "700" : "400",
+                              transition: "all 0.15s",
+                            }}
+                              onMouseEnter={e => { if (!isActive) { e.currentTarget.style.background = "rgba(232,200,114,0.08)"; e.currentTarget.style.color = "rgba(232,200,114,0.7)"; e.currentTarget.style.borderColor = "rgba(232,200,114,0.2)"; } }}
+                              onMouseLeave={e => { if (!isActive) { e.currentTarget.style.background = "rgba(255,255,255,0.04)"; e.currentTarget.style.color = "rgba(255,255,255,0.35)"; e.currentTarget.style.borderColor = "rgba(255,255,255,0.08)"; } }}
+                            >{ph.label}</button>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                   <div>
                     <div style={{ fontFamily: "'Space Mono', monospace", fontSize: "9px", letterSpacing: "2px", color: "rgba(255,255,255,0.3)", textTransform: "uppercase", marginBottom: "4px" }}>Next Milestone</div>
@@ -2281,16 +2314,34 @@ Rules:
 
                 {/* ── Phase transition: Enter CA ── */}
                 {selectedProjectData.phase !== "Construction Admin" && (
-                  <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "6px" }}>
-                    <button onClick={() => enterCaPhase(selectedProjectData.id)} style={{
-                      background: "rgba(74,222,128,0.06)", border: "1px solid rgba(74,222,128,0.18)",
-                      borderRadius: "7px", padding: "4px 12px", cursor: "pointer",
-                      fontFamily: "'Space Mono', monospace", fontSize: "9px", letterSpacing: "1px",
-                      color: "rgba(74,222,128,0.6)", textTransform: "uppercase", transition: "all 0.2s",
-                    }}
-                      onMouseEnter={e => { e.currentTarget.style.background = "rgba(74,222,128,0.12)"; e.currentTarget.style.borderColor = "rgba(74,222,128,0.35)"; e.currentTarget.style.color = "#4ADE80"; }}
-                      onMouseLeave={e => { e.currentTarget.style.background = "rgba(74,222,128,0.06)"; e.currentTarget.style.borderColor = "rgba(74,222,128,0.18)"; e.currentTarget.style.color = "rgba(74,222,128,0.6)"; }}
-                    >Enter CA Phase →</button>
+                  <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "6px", alignItems: "center", gap: "8px" }}>
+                    {caConfirmProjectId === selectedProjectData.id ? (
+                      <>
+                        <span style={{ fontFamily: "'Space Mono', monospace", fontSize: "9px", color: "#4ADE80", letterSpacing: "1px" }}>Advance to CA phase?</span>
+                        <button onClick={() => enterCaPhase(selectedProjectData.id)} style={{
+                          background: "rgba(74,222,128,0.15)", border: "1px solid rgba(74,222,128,0.4)",
+                          borderRadius: "7px", padding: "4px 12px", cursor: "pointer",
+                          fontFamily: "'Space Mono', monospace", fontSize: "9px", letterSpacing: "1px",
+                          color: "#4ADE80", textTransform: "uppercase", fontWeight: "700",
+                        }}>Yes, Enter CA</button>
+                        <button onClick={() => setCaConfirmProjectId(null)} style={{
+                          background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)",
+                          borderRadius: "7px", padding: "4px 10px", cursor: "pointer",
+                          fontFamily: "'Space Mono', monospace", fontSize: "9px", letterSpacing: "1px",
+                          color: "rgba(255,255,255,0.35)", textTransform: "uppercase",
+                        }}>Cancel</button>
+                      </>
+                    ) : (
+                      <button onClick={() => setCaConfirmProjectId(selectedProjectData.id)} style={{
+                        background: "rgba(74,222,128,0.06)", border: "1px solid rgba(74,222,128,0.18)",
+                        borderRadius: "7px", padding: "4px 12px", cursor: "pointer",
+                        fontFamily: "'Space Mono', monospace", fontSize: "9px", letterSpacing: "1px",
+                        color: "rgba(74,222,128,0.6)", textTransform: "uppercase", transition: "all 0.2s",
+                      }}
+                        onMouseEnter={e => { e.currentTarget.style.background = "rgba(74,222,128,0.12)"; e.currentTarget.style.borderColor = "rgba(74,222,128,0.35)"; e.currentTarget.style.color = "#4ADE80"; }}
+                        onMouseLeave={e => { e.currentTarget.style.background = "rgba(74,222,128,0.06)"; e.currentTarget.style.borderColor = "rgba(74,222,128,0.18)"; e.currentTarget.style.color = "rgba(74,222,128,0.6)"; }}
+                      >Enter CA Phase →</button>
+                    )}
                   </div>
                 )}
 
@@ -2321,6 +2372,9 @@ Rules:
                               <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                                 <div style={{ width: "5px", height: "5px", borderRadius: "50%", background: deliverableStatusColors[d.status] }} />
                                 <span style={{ fontSize: "12px", color: "rgba(255,255,255,0.5)" }}>{d.name}</span>
+                                {d.fromCalendar && (
+                                  <span style={{ fontFamily: "'Space Mono', monospace", fontSize: "8px", letterSpacing: "1px", color: "#72B8E8", background: "rgba(114,184,232,0.1)", border: "1px solid rgba(114,184,232,0.2)", borderRadius: "4px", padding: "1px 5px" }}>CAL</span>
+                                )}
                               </div>
                               <span style={{ fontFamily: "'Space Mono', monospace", fontSize: "10px", color: "rgba(255,255,255,0.3)" }}>{formatDate(d.due)}</span>
                             </div>
@@ -2331,7 +2385,35 @@ Rules:
 
                     {/* CA Log */}
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px" }}>
-                      <div style={{ fontFamily: "'Space Mono', monospace", fontSize: "9px", letterSpacing: "2px", color: "rgba(74,222,128,0.7)", textTransform: "uppercase" }}>CA Log</div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                        <div style={{ fontFamily: "'Space Mono', monospace", fontSize: "9px", letterSpacing: "2px", color: "rgba(74,222,128,0.7)", textTransform: "uppercase" }}>CA Log</div>
+                        {revertConfirmProjectId === selectedProjectData.id ? (
+                          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                            <span style={{ fontFamily: "'Space Mono', monospace", fontSize: "9px", color: "#FBBF24", letterSpacing: "1px" }}>Revert to Design?</span>
+                            <button onClick={() => revertToDesignPhase(selectedProjectData.id)} style={{
+                              background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.35)",
+                              borderRadius: "6px", padding: "3px 10px", cursor: "pointer",
+                              fontFamily: "'Space Mono', monospace", fontSize: "8px", letterSpacing: "1px",
+                              color: "#FBBF24", textTransform: "uppercase", fontWeight: "700",
+                            }}>Yes, Revert</button>
+                            <button onClick={() => setRevertConfirmProjectId(null)} style={{
+                              background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)",
+                              borderRadius: "6px", padding: "3px 8px", cursor: "pointer",
+                              fontFamily: "'Space Mono', monospace", fontSize: "8px", color: "rgba(255,255,255,0.3)",
+                            }}>Cancel</button>
+                          </div>
+                        ) : (
+                          <button onClick={() => setRevertConfirmProjectId(selectedProjectData.id)} style={{
+                            background: "transparent", border: "1px solid rgba(251,191,36,0.15)",
+                            borderRadius: "6px", padding: "3px 8px", cursor: "pointer",
+                            fontFamily: "'Space Mono', monospace", fontSize: "8px", letterSpacing: "0.5px",
+                            color: "rgba(251,191,36,0.4)", textTransform: "uppercase", transition: "all 0.2s",
+                          }}
+                            onMouseEnter={e => { e.currentTarget.style.borderColor = "rgba(251,191,36,0.4)"; e.currentTarget.style.color = "#FBBF24"; }}
+                            onMouseLeave={e => { e.currentTarget.style.borderColor = "rgba(251,191,36,0.15)"; e.currentTarget.style.color = "rgba(251,191,36,0.4)"; }}
+                          >← Revert to Design</button>
+                        )}
+                      </div>
                       <div style={{ display: "flex", gap: "4px" }}>
                         {CA_TYPES.map(t => (
                           <button key={t.key} onClick={() => { setCaAddingType(caAddingType === t.key ? null : t.key); setCaAddDraft({ subject: "", dueDate: "" }); }}
@@ -2452,15 +2534,72 @@ Rules:
                 ) : (
                   /* ══════════════ DESIGN VIEW ══════════════ */
                   <div>
-                    {selectedProjectData.deliverables.map((d, di) => (
-                      <div key={di} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: di < selectedProjectData.deliverables.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                          <div style={{ width: "6px", height: "6px", borderRadius: "50%", background: deliverableStatusColors[d.status] }} />
-                          <span style={{ fontSize: "13px" }}>{d.name}</span>
+                    {selectedProjectData.deliverables.map((d, di) => {
+                      const isEditing = editingDeliverable?.projectId === selectedProjectData.id && editingDeliverable?.index === di;
+                      if (isEditing) {
+                        return (
+                          <div key={di} style={{ padding: "10px 12px", marginBottom: "4px", background: "rgba(232,200,114,0.05)", border: "1px solid rgba(232,200,114,0.2)", borderRadius: "10px" }}>
+                            <div style={{ display: "flex", gap: "8px", marginBottom: "8px" }}>
+                              <input
+                                value={deliverableDraft.name}
+                                onChange={e => setDeliverableDraft(p => ({ ...p, name: e.target.value }))}
+                                placeholder="Deliverable name"
+                                style={{ flex: 1, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "7px", padding: "6px 10px", color: "#FAFAF7", fontSize: "12px", fontFamily: "'DM Sans', sans-serif", outline: "none" }}
+                                onFocus={e => e.currentTarget.style.borderColor = "rgba(232,200,114,0.4)"}
+                                onBlur={e => e.currentTarget.style.borderColor = "rgba(255,255,255,0.12)"}
+                              />
+                              <input
+                                type="date"
+                                value={deliverableDraft.due}
+                                onChange={e => setDeliverableDraft(p => ({ ...p, due: e.target.value }))}
+                                style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "7px", padding: "6px 10px", color: "rgba(255,255,255,0.7)", fontSize: "11px", fontFamily: "'DM Sans', sans-serif", outline: "none", colorScheme: "dark", width: "140px" }}
+                                onFocus={e => e.currentTarget.style.borderColor = "rgba(232,200,114,0.4)"}
+                                onBlur={e => e.currentTarget.style.borderColor = "rgba(255,255,255,0.12)"}
+                              />
+                            </div>
+                            <input
+                              value={deliverableDraft.notes}
+                              onChange={e => setDeliverableDraft(p => ({ ...p, notes: e.target.value }))}
+                              placeholder="Notes (optional)..."
+                              style={{ width: "100%", boxSizing: "border-box", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "7px", padding: "6px 10px", color: "rgba(255,255,255,0.6)", fontSize: "11px", fontFamily: "'DM Sans', sans-serif", outline: "none", marginBottom: "8px" }}
+                              onFocus={e => e.currentTarget.style.borderColor = "rgba(232,200,114,0.3)"}
+                              onBlur={e => e.currentTarget.style.borderColor = "rgba(255,255,255,0.08)"}
+                            />
+                            <div style={{ display: "flex", gap: "6px" }}>
+                              <button onClick={saveDeliverableEdit} style={{ background: "rgba(232,200,114,0.15)", border: "1px solid rgba(232,200,114,0.35)", borderRadius: "6px", padding: "5px 14px", cursor: "pointer", fontSize: "11px", fontWeight: "600", color: "#E8C872" }}>Save</button>
+                              <button onClick={() => setEditingDeliverable(null)} style={{ background: "none", border: "1px solid rgba(255,255,255,0.07)", borderRadius: "6px", padding: "5px 10px", cursor: "pointer", fontSize: "11px", color: "rgba(255,255,255,0.3)" }}>Cancel</button>
+                            </div>
+                          </div>
+                        );
+                      }
+                      return (
+                        <div key={di}
+                          style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 8px", borderBottom: di < selectedProjectData.deliverables.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none", borderRadius: "6px", transition: "background 0.15s", cursor: "default" }}
+                          onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.025)"; const btn = e.currentTarget.querySelector("[data-edit-btn]"); if (btn) btn.style.opacity = "1"; }}
+                          onMouseLeave={e => { e.currentTarget.style.background = "transparent"; const btn = e.currentTarget.querySelector("[data-edit-btn]"); if (btn) btn.style.opacity = "0"; }}
+                        >
+                          <div style={{ display: "flex", alignItems: "center", gap: "10px", flex: 1, minWidth: 0 }}>
+                            <div style={{ width: "6px", height: "6px", borderRadius: "50%", background: deliverableStatusColors[d.status], flexShrink: 0 }} />
+                            <div style={{ minWidth: 0 }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                <span style={{ fontSize: "13px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{d.name}</span>
+                                {d.fromCalendar && (
+                                  <span style={{ flexShrink: 0, fontFamily: "'Space Mono', monospace", fontSize: "8px", letterSpacing: "1px", color: "#72B8E8", background: "rgba(114,184,232,0.1)", border: "1px solid rgba(114,184,232,0.25)", borderRadius: "4px", padding: "1px 5px", textTransform: "uppercase" }}>CAL</span>
+                                )}
+                              </div>
+                              {d.notes && <div style={{ fontSize: "10px", color: "rgba(255,255,255,0.3)", marginTop: "2px", fontStyle: "italic" }}>{d.notes}</div>}
+                            </div>
+                          </div>
+                          <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
+                            <span style={{ fontFamily: "'Space Mono', monospace", fontSize: "12px", color: "rgba(255,255,255,0.4)" }}>{formatDate(d.due)}</span>
+                            <button data-edit-btn="true" onClick={() => { setEditingDeliverable({ projectId: selectedProjectData.id, index: di }); setDeliverableDraft({ name: d.name, due: d.due, notes: d.notes || "" }); }} style={{ opacity: 0, background: "rgba(232,200,114,0.08)", border: "1px solid rgba(232,200,114,0.2)", borderRadius: "5px", padding: "3px 8px", cursor: "pointer", fontFamily: "'Space Mono', monospace", fontSize: "8px", letterSpacing: "0.5px", color: "rgba(232,200,114,0.7)", transition: "all 0.15s" }}
+                              onMouseEnter={e => { e.currentTarget.style.background = "rgba(232,200,114,0.15)"; e.currentTarget.style.color = "#E8C872"; }}
+                              onMouseLeave={e => { e.currentTarget.style.background = "rgba(232,200,114,0.08)"; e.currentTarget.style.color = "rgba(232,200,114,0.7)"; }}
+                            >Edit</button>
+                          </div>
                         </div>
-                        <span style={{ fontFamily: "'Space Mono', monospace", fontSize: "12px", color: "rgba(255,255,255,0.4)" }}>{formatDate(d.due)}</span>
-                      </div>
-                    ))}
+                      );
+                    })}
 
                     {/* Upcoming Calendar Events for design-phase projects */}
                     {(() => {
@@ -2772,9 +2911,9 @@ Rules:
   );
 }
 
-    // Render the app
-    const root = ReactDOM.createRoot(document.getElementById("root"));
-    root.render(<Dashboard />);
+    const rootEl = document.getElementById('root');
+    const reactRoot = ReactDOM.createRoot(rootEl);
+    reactRoot.render(<Dashboard />);
   </script>
 </body>
 </html>
