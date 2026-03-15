@@ -6,28 +6,27 @@
   <title>RDG Command Center</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet" />
   <style>
-    *, *::before, *::after { box-sizing: border-box; }
-    html, body { margin: 0; padding: 0; background: #0B0D12; color: #FAFAF7; font-family: 'DM Sans', sans-serif; min-height: 100vh; }
-    #root { min-height: 100vh; }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width: 100%; min-height: 100vh; background: #0B0D12; color: #FAFAF7; font-family: 'DM Sans', sans-serif; }
+    #root { width: 100%; min-height: 100vh; }
     ::-webkit-scrollbar { width: 6px; height: 6px; }
-    ::-webkit-scrollbar-track { background: rgba(255,255,255,0.02); }
+    ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
-    ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.18); }
-    input, select, button, textarea { font-family: 'DM Sans', sans-serif; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+    input, select, textarea { color-scheme: dark; }
   </style>
-  <!-- React 18 + Babel standalone for JSX -->
-  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.development.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.development.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
 </head>
 <body>
   <div id="root"></div>
   <script type="text/babel">
-    const { useState, useEffect, useCallback } = React;
+    const { useState, useEffect, useCallback, useRef } = React;
 
-
+// React loaded via CDN
 
 // ═══════ ITALIAN LEARNING DATA ═══════
 const QUIZ_TYPES = ["translate_to_english", "translate_to_italian", "word_of_day", "grammar"];
@@ -1573,7 +1572,7 @@ function Dashboard() {
       const todayISO = today.toISOString();
       const endISO = end.toISOString();
 
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
+      const response = await fetch("/api/anthropic", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1607,8 +1606,8 @@ Return ONLY the JSON array. Nothing before it, nothing after it.`,
         setCalendarEvents(cleaned);
         setCalendarLastFetched(Date.now());
         try {
-          await window.storage.set("dashboard:gcal_events", JSON.stringify(cleaned));
-          await window.storage.set("dashboard:gcal_fetched_at", String(Date.now()));
+          localStorage.setItem("dashboard:gcal_events", JSON.stringify(cleaned));
+          localStorage.setItem("dashboard:gcal_fetched_at", String(Date.now()));
         } catch (_) {}
       } else {
         throw new Error("No JSON array in response");
@@ -1631,7 +1630,7 @@ Return ONLY the JSON array. Nothing before it, nothing after it.`,
       const end = new Date();
       end.setDate(today.getDate() + 180);
       const existingDues = new Set((project.deliverables || []).map(d => d.due));
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
+      const response = await fetch("/api/anthropic", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1752,45 +1751,39 @@ Rules:
   useEffect(() => {
     async function loadData() {
       try {
-        const storedProjects = await window.storage.get("dashboard:projects");
-        if (storedProjects) setProjects(JSON.parse(storedProjects.value));
+        const storedProjects = localStorage.getItem("dashboard:projects");
+        if (storedProjects) setProjects(JSON.parse(storedProjects));
       } catch (_) {}
       try {
-        const storedTodos = await window.storage.get("dashboard:todos");
-        if (storedTodos) setTodos(JSON.parse(storedTodos.value));
+        const storedTodos = localStorage.getItem("dashboard:todos");
+        if (storedTodos) setTodos(JSON.parse(storedTodos));
       } catch (_) {}
       try {
-        const storedTeam = await window.storage.get("dashboard:team");
+        const storedTeam = localStorage.getItem("dashboard:team");
         if (storedTeam) {
-          const parsed = JSON.parse(storedTeam.value);
+          const parsed = JSON.parse(storedTeam);
           const storedIds = new Set(parsed.map(m => m.id));
           const merged = [...parsed, ...INITIAL_TEAM.filter(m => !storedIds.has(m.id))];
           setTeam(merged);
         }
       } catch (_) {}
       try {
-        const storedConsultants = await window.storage.get("dashboard:consultants");
-        if (storedConsultants) setConsultants(JSON.parse(storedConsultants.value));
+        const storedConsultants = localStorage.getItem("dashboard:consultants");
+        if (storedConsultants) setConsultants(JSON.parse(storedConsultants));
       } catch (_) {}
 
-      // Load cached calendar events, then refresh if older than 15 min
-      let shouldFetch = true;
+      // Load cached calendar events (auto-fetch disabled on hosted version)
       try {
-        const cachedEvents = await window.storage.get("dashboard:gcal_events");
-        const cachedAt = await window.storage.get("dashboard:gcal_fetched_at");
+        const cachedEvents = localStorage.getItem("dashboard:gcal_events");
+        const cachedAt = localStorage.getItem("dashboard:gcal_fetched_at");
         if (cachedEvents && cachedAt) {
-          const age = Date.now() - parseInt(cachedAt.value, 10);
-          if (age < 15 * 60 * 1000) {
-            setCalendarEvents(JSON.parse(cachedEvents.value));
-            setCalendarLastFetched(parseInt(cachedAt.value, 10));
-            shouldFetch = false;
-          }
+          setCalendarEvents(JSON.parse(cachedEvents));
+          setCalendarLastFetched(parseInt(cachedAt, 10));
         }
       } catch (_) {}
 
       setStorageReady(true);
       setLoaded(true);
-      if (shouldFetch) fetchCalendarEvents();
     }
     loadData();
     const interval = setInterval(() => setTime(new Date()), 30000);
@@ -1800,25 +1793,25 @@ Rules:
   // Persist projects whenever they change (after initial load)
   useEffect(() => {
     if (!storageReady) return;
-    window.storage.set("dashboard:projects", JSON.stringify(projects)).catch(() => {});
+    try { localStorage.setItem("dashboard:projects", JSON.stringify(projects)); } catch (_) {}
   }, [projects, storageReady]);
 
   // Persist todos whenever they change (after initial load)
   useEffect(() => {
     if (!storageReady) return;
-    window.storage.set("dashboard:todos", JSON.stringify(todos)).catch(() => {});
+    try { localStorage.setItem("dashboard:todos", JSON.stringify(todos)); } catch (_) {}
   }, [todos, storageReady]);
 
   // Persist team whenever it changes
   useEffect(() => {
     if (!storageReady) return;
-    window.storage.set("dashboard:team", JSON.stringify(team)).catch(() => {});
+    try { localStorage.setItem("dashboard:team", JSON.stringify(team)); } catch (_) {}
   }, [team, storageReady]);
 
   // Persist consultants whenever they change
   useEffect(() => {
     if (!storageReady) return;
-    window.storage.set("dashboard:consultants", JSON.stringify(consultants)).catch(() => {});
+    try { localStorage.setItem("dashboard:consultants", JSON.stringify(consultants)); } catch (_) {}
   }, [consultants, storageReady]);
 
   const updateProjectField = (projectId, updates) => {
@@ -2911,9 +2904,8 @@ Rules:
   );
 }
 
-    const rootEl = document.getElementById('root');
-    const reactRoot = ReactDOM.createRoot(rootEl);
-    reactRoot.render(<Dashboard />);
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<Dashboard />);
   </script>
 </body>
 </html>
