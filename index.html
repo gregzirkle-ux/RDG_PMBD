@@ -1560,6 +1560,10 @@ function Dashboard() {
   const [revertConfirmProjectId, setRevertConfirmProjectId] = useState(null);
   const [editingDeliverable, setEditingDeliverable] = useState(null); // { projectId, index }
   const [deliverableDraft, setDeliverableDraft] = useState({ name: "", due: "", notes: "" });
+  const [dragProjectId, setDragProjectId] = useState(null);
+  const [dragOverProjectId, setDragOverProjectId] = useState(null);
+  const [archivedHotTasks, setArchivedHotTasks] = useState([]);
+  const [showArchive, setShowArchive] = useState(false);
 
   // ── Google Calendar live fetch ──
   const fetchCalendarEvents = useCallback(async () => {
@@ -1569,7 +1573,7 @@ function Dashboard() {
       const today = new Date();
       const end = new Date();
       end.setDate(today.getDate() + 60);
-      const todayISO = today.toISOString();
+      const todayISO = new Date(today.toISOString().split("T")[0] + "T00:00:00").toISOString();
       const endISO = end.toISOString();
 
       const response = await fetch("/api/anthropic", {
@@ -1868,7 +1872,15 @@ Rules:
   };
 
   const toggleTodo = (id) => {
-    setTodos(prev => prev.map(t => t.id === id ? { ...t, done: !t.done } : t));
+    const todo = todos.find(t => t.id === id);
+    if (!todo) return;
+    if (todo.hot && !todo.done) {
+      // Archive hot tasks instead of leaving them in the list
+      setArchivedHotTasks(prev => [...prev, { ...todo, done: true, completedAt: Date.now() }]);
+      setTodos(prev => prev.filter(t => t.id !== id));
+    } else {
+      setTodos(prev => prev.map(t => t.id === id ? { ...t, done: !t.done } : t));
+    }
   };
 
   const addTask = () => {
@@ -1886,6 +1898,12 @@ Rules:
   const removeTask = (id) => {
     setTodos(prev => prev.filter(t => t.id !== id));
   };
+
+  // Auto-purge archived hot tasks older than 7 days
+  useEffect(() => {
+    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    setArchivedHotTasks(prev => prev.filter(t => t.completedAt > sevenDaysAgo));
+  }, []);
 
   const weekDays = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
   const today = new Date();
@@ -1910,22 +1928,12 @@ Rules:
     }))
   );
 
-  const liveEvents = calendarEvents.length > 0 ? calendarEvents : (calendarError ? CALENDAR_EVENTS : []);
+  const liveEvents = calendarEvents.length > 0 ? calendarEvents : CALENDAR_EVENTS;
   const allCalendarEvents = [...liveEvents, ...projectDeliverableEvents]
     .sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
 
   const upcomingEvents = allCalendarEvents
-    .filter(e => e.date > todayStr || (e.date === todayStr && (() => {
-      if (e.time === "All Day") return true;
-      const [timePart, ampm] = e.time.split(" ");
-      if (!ampm) return true;
-      let [h, m] = timePart.split(":").map(Number);
-      if (ampm === "PM" && h !== 12) h += 12;
-      if (ampm === "AM" && h === 12) h = 0;
-      const eventMinutes = h * 60 + m;
-      const nowMinutes = time.getHours() * 60 + time.getMinutes();
-      return eventMinutes >= nowMinutes;
-    })()))
+    .filter(e => e.date >= todayStr)
     .slice(0, 12);
   const remainingTodos = todos.filter(t => !t.done).length;
 
@@ -1949,12 +1957,12 @@ Rules:
 
         {/* HEADER */}
         <div style={{
-          display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: "20px",
+          display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px",
           opacity: loaded ? 1 : 0, transform: loaded ? "translateY(0)" : "translateY(-20px)",
           transition: "all 0.8s cubic-bezier(0.4,0,0.2,1)",
         }}>
           <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
-            <img src="data:image/png;base64,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" alt="" style={{ height: "48px" }} />
+            <img src="data:image/png;base64,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" alt="RDG" style={{ height: "56px", width: "auto", display: "block", objectFit: "contain" }} />
             <span style={{ fontFamily: "'Space Mono', monospace", fontSize: "12px", letterSpacing: "6px", color: "#B24444", textTransform: "uppercase", fontWeight: "400" }}>Redline Design Group</span>
           </div>
           <div style={{ textAlign: "right" }}>
@@ -1989,7 +1997,20 @@ Rules:
                 <div style={{ background: "rgba(248,113,113,0.15)", border: "1px solid rgba(248,113,113,0.3)", borderRadius: "20px", padding: "2px 10px", fontFamily: "'Space Mono', monospace", fontSize: "12px", color: "#F87171", fontWeight: "700" }}>{remainingTodos}</div>
               )}
             </div>
-            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: "11px", color: "rgba(255,255,255,0.3)" }}>{todos.filter(t => t.done).length}/{todos.length} complete</div>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+              {archivedHotTasks.length > 0 && (
+                <button onClick={() => setShowArchive(a => !a)} style={{
+                  background: showArchive ? "rgba(232,200,114,0.1)" : "rgba(255,255,255,0.03)",
+                  border: `1px solid ${showArchive ? "rgba(232,200,114,0.3)" : "rgba(255,255,255,0.07)"}`,
+                  borderRadius: "8px", padding: "3px 10px", cursor: "pointer",
+                  fontFamily: "'Space Mono', monospace", fontSize: "9px", letterSpacing: "1.5px",
+                  color: showArchive ? "#E8C872" : "rgba(255,255,255,0.35)", textTransform: "uppercase", transition: "all 0.2s",
+                }}>
+                  {showArchive ? "Hide" : "Completed Hot"} ({archivedHotTasks.length})
+                </button>
+              )}
+              <div style={{ fontFamily: "'Space Mono', monospace", fontSize: "11px", color: "rgba(255,255,255,0.3)" }}>{todos.filter(t => t.done).length}/{todos.length} complete</div>
+            </div>
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
             {todos.map((todo) => (
@@ -2032,6 +2053,46 @@ Rules:
               </div>
             ))}
           </div>
+
+          {/* Completed Hot Tasks Archive */}
+          {showArchive && archivedHotTasks.length > 0 && (
+            <div style={{ marginTop: "10px", borderTop: "1px solid rgba(255,255,255,0.06)", paddingTop: "10px" }}>
+              <div style={{ fontFamily: "'Space Mono', monospace", fontSize: "9px", letterSpacing: "2px", color: "rgba(255,255,255,0.25)", textTransform: "uppercase", marginBottom: "6px" }}>
+                Completed Hot Tasks — drops off after 7 days
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
+                {archivedHotTasks.map((task) => {
+                  const daysAgo = Math.floor((Date.now() - task.completedAt) / (1000 * 60 * 60 * 24));
+                  return (
+                    <div key={task.id} style={{
+                      display: "flex", alignItems: "center", gap: "14px", padding: "8px 12px",
+                      borderRadius: "10px", background: "rgba(255,255,255,0.01)",
+                      border: "1px solid rgba(255,255,255,0.04)", opacity: 0.55,
+                    }}>
+                      <div style={{ width: "22px", height: "22px", borderRadius: "6px", flexShrink: 0, border: "2px solid rgba(74,222,128,0.4)", background: "rgba(74,222,128,0.08)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        <span style={{ color: "#4ADE80", fontSize: "12px", fontWeight: "700" }}>✓</span>
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: "13px", color: "rgba(255,255,255,0.35)", textDecoration: "line-through" }}>{task.text}</div>
+                        {task.project && <div style={{ fontSize: "10px", color: "rgba(255,255,255,0.2)", marginTop: "1px" }}>{task.project}</div>}
+                      </div>
+                      <div style={{ fontFamily: "'Space Mono', monospace", fontSize: "9px", color: "rgba(255,255,255,0.2)", flexShrink: 0 }}>
+                        {daysAgo === 0 ? "today" : `${daysAgo}d ago`}
+                      </div>
+                      <button onClick={() => setArchivedHotTasks(prev => prev.filter(t => t.id !== task.id))} style={{
+                        background: "none", border: "none", cursor: "pointer", fontSize: "10px",
+                        color: "rgba(255,255,255,0.15)", padding: "2px 4px", transition: "color 0.2s",
+                      }}
+                        onMouseEnter={e => e.currentTarget.style.color = "#F87171"}
+                        onMouseLeave={e => e.currentTarget.style.color = "rgba(255,255,255,0.15)"}
+                      >✕</button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* Add Task Input */}
           <div style={{ display: "flex", gap: "8px", marginTop: "10px", alignItems: "center" }}>
             <div onClick={() => setNewTaskHot(!newTaskHot)} style={{
@@ -2107,12 +2168,48 @@ Rules:
                 const isSelected = selectedProject === project.id;
                 const isNew = justCreated === project.id;
                 const daysTo = daysUntil(project.nextMilestoneDate);
+                const isDragOver = dragOverProjectId === project.id && dragProjectId !== project.id;
                 return (
-                  <div key={project.id} onClick={() => setSelectedProject(isSelected ? null : project.id)} style={{
+                  <div key={project.id}
+                    draggable={true}
+                    onDragStart={(e) => {
+                      setDragProjectId(project.id);
+                      e.dataTransfer.effectAllowed = "move";
+                      setTimeout(() => { try { e.currentTarget.style.opacity = "0.4"; } catch(_) {} }, 0);
+                    }}
+                    onDragEnd={(e) => {
+                      try { e.currentTarget.style.opacity = "1"; } catch(_) {}
+                      setDragProjectId(null);
+                      setDragOverProjectId(null);
+                    }}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      e.dataTransfer.dropEffect = "move";
+                      if (project.id !== dragProjectId) setDragOverProjectId(project.id);
+                    }}
+                    onDragLeave={() => setDragOverProjectId(null)}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      if (dragProjectId && project.id !== dragProjectId) {
+                        setProjects(prev => {
+                          const arr = [...prev];
+                          const fromIdx = arr.findIndex(p => p.id === dragProjectId);
+                          const toIdx = arr.findIndex(p => p.id === project.id);
+                          const [moved] = arr.splice(fromIdx, 1);
+                          arr.splice(toIdx, 0, moved);
+                          return arr;
+                        });
+                      }
+                      setDragProjectId(null);
+                      setDragOverProjectId(null);
+                    }}
+                    onClick={() => setSelectedProject(isSelected ? null : project.id)} style={{
                     background: isNew ? "rgba(74,222,128,0.1)" : isSelected ? "rgba(232,200,114,0.1)" : "rgba(255,255,255,0.025)",
-                    border: `1px solid ${isNew ? "rgba(74,222,128,0.35)" : isSelected ? "rgba(232,200,114,0.3)" : "rgba(255,255,255,0.05)"}`,
-                    borderRadius: "14px", padding: "14px 12px", cursor: "pointer",
+                    border: `1px solid ${isDragOver ? "rgba(114,184,232,0.55)" : isNew ? "rgba(74,222,128,0.35)" : isSelected ? "rgba(232,200,114,0.3)" : "rgba(255,255,255,0.05)"}`,
+                    borderRadius: "14px", padding: "14px 12px", cursor: "grab",
                     transition: "all 0.35s cubic-bezier(0.4,0,0.2,1)", position: "relative", overflow: "hidden",
+                    transform: isDragOver ? "scale(1.03)" : "none",
+                    boxShadow: isDragOver ? "0 0 0 2px rgba(114,184,232,0.3)" : "none",
                   }}
                     onMouseEnter={e => { if (!isSelected) { e.currentTarget.style.background = "rgba(255,255,255,0.045)"; e.currentTarget.style.borderColor = "rgba(255,255,255,0.1)"; e.currentTarget.style.transform = "translateY(-2px)"; }}}
                     onMouseLeave={e => { if (!isSelected) { e.currentTarget.style.background = "rgba(255,255,255,0.025)"; e.currentTarget.style.borderColor = "rgba(255,255,255,0.05)"; e.currentTarget.style.transform = "translateY(0)"; }}}
