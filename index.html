@@ -1611,9 +1611,14 @@ function Dashboard() {
   const [archivedHotTasks, setArchivedHotTasks] = useState([]);
   const [showArchive, setShowArchive] = useState(false);
   const [issuesBarExpanded, setIssuesBarExpanded] = useState(false);
+  const [firesExpanded, setFiresExpanded] = useState(true);
   const [addingIssueForProject, setAddingIssueForProject] = useState(null);
   const [issueDraft, setIssueDraft] = useState({ title: "", description: "", priority: "normal", dueDate: "" });
   const [archivedIssues, setArchivedIssues] = useState([]);
+  const [dragTaskId, setDragTaskId] = useState(null);
+  const [dragOverTaskId, setDragOverTaskId] = useState(null);
+  const [dismissedOverdue, setDismissedOverdue] = useState([]);
+  const taskInputRef = useRef(null);
 
   // ── Google Calendar live fetch ──
   const fetchCalendarEvents = useCallback(async () => {
@@ -1857,6 +1862,19 @@ Rules:
         if (storedArchivedIssues) setArchivedIssues(JSON.parse(storedArchivedIssues));
       } catch (_) {}
 
+      try {
+        const storedFiresExp = localStorage.getItem("dashboard:fires_expanded");
+        if (storedFiresExp !== null) setFiresExpanded(JSON.parse(storedFiresExp));
+      } catch (_) {}
+      try {
+        const storedIssuesExp = localStorage.getItem("dashboard:issues_expanded");
+        if (storedIssuesExp !== null) setIssuesBarExpanded(JSON.parse(storedIssuesExp));
+      } catch (_) {}
+      try {
+        const storedDismissed = localStorage.getItem("dashboard:dismissed_overdue");
+        if (storedDismissed) setDismissedOverdue(JSON.parse(storedDismissed));
+      } catch (_) {}
+
       setStorageReady(true);
       setLoaded(true);
     }
@@ -1894,6 +1912,23 @@ Rules:
     if (!storageReady) return;
     try { localStorage.setItem("dashboard:archived_issues", JSON.stringify(archivedIssues)); } catch (_) {}
   }, [archivedIssues, storageReady]);
+
+  // Persist collapse states
+  useEffect(() => {
+    if (!storageReady) return;
+    try { localStorage.setItem("dashboard:fires_expanded", JSON.stringify(firesExpanded)); } catch (_) {}
+  }, [firesExpanded, storageReady]);
+
+  useEffect(() => {
+    if (!storageReady) return;
+    try { localStorage.setItem("dashboard:issues_expanded", JSON.stringify(issuesBarExpanded)); } catch (_) {}
+  }, [issuesBarExpanded, storageReady]);
+
+  // Persist dismissed overdue deliverables
+  useEffect(() => {
+    if (!storageReady) return;
+    try { localStorage.setItem("dashboard:dismissed_overdue", JSON.stringify(dismissedOverdue)); } catch (_) {}
+  }, [dismissedOverdue, storageReady]);
 
   const updateProjectField = (projectId, updates) => {
     setProjects(prev => prev.map(p => p.id === projectId ? { ...p, ...updates } : p));
@@ -1974,6 +2009,64 @@ Rules:
 
   const removeTask = (id) => {
     setTodos(prev => prev.filter(t => t.id !== id));
+  };
+
+  // ── Keyboard shortcuts ──
+  useEffect(() => {
+    const handler = (e) => {
+      // Don't fire if user is typing in an input/textarea/select
+      const tag = document.activeElement?.tagName;
+      const isTyping = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+
+      if (e.key === "/" && !isTyping) {
+        e.preventDefault();
+        setFiresExpanded(true);
+        setTimeout(() => taskInputRef.current?.focus(), 50);
+      }
+      if (e.key === "Escape") {
+        if (isTyping) {
+          document.activeElement.blur();
+        } else {
+          setFiresExpanded(false);
+          setIssuesBarExpanded(false);
+        }
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
+  // ── Overdue deliverable auto-flagging ──
+  const overdueDeliverables = React.useMemo(() => {
+    const todayIso = new Date().toISOString().split("T")[0];
+    const flags = [];
+    projects.forEach(p => {
+      if (p.phase === "Construction Admin") return;
+      (p.deliverables || []).forEach(d => {
+        if (d.status === "complete") return;
+        if (d.due < todayIso) {
+          const key = `${p.id}::${d.name}::${d.due}`;
+          if (!dismissedOverdue.includes(key)) {
+            // Check if already promoted to a real task
+            const alreadyTask = todos.some(t => t.text.includes(d.name) && t.text.includes(p.name));
+            if (!alreadyTask) {
+              flags.push({ key, projectId: p.id, projectName: p.name, projectIcon: p.icon, deliverableName: d.name, due: d.due });
+            }
+          }
+        }
+      });
+    });
+    return flags;
+  }, [projects, dismissedOverdue, todos]);
+
+  const promoteOverdueToFire = (item) => {
+    const newId = Math.max(0, ...todos.map(t => t.id)) + 1;
+    setTodos(prev => [...prev, { id: newId, text: `OVERDUE: ${item.deliverableName} (${item.projectName})`, project: item.projectName, done: false, hot: true }]);
+    setDismissedOverdue(prev => [...prev, item.key]);
+  };
+
+  const dismissOverdue = (key) => {
+    setDismissedOverdue(prev => [...prev, key]);
   };
 
   // ── Issue management ──
@@ -2100,11 +2193,13 @@ Rules:
           opacity: loaded ? 1 : 0, transform: loaded ? "translateY(0)" : "translateY(-20px)",
           transition: "all 0.8s cubic-bezier(0.4,0,0.2,1)",
         }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
-            <img src="data:image/png;base64,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" alt="RDG" style={{ height: "56px", width: "auto", display: "block", objectFit: "contain" }} />
-            <span style={{ fontFamily: "'Space Mono', monospace", fontSize: "12px", letterSpacing: "6px", color: "#B24444", textTransform: "uppercase", fontWeight: "400" }}>Redline Design Group</span>
+          <div style={{ display: "flex", alignItems: "center" }}>
+            <span style={{ fontFamily: "'Space Mono', monospace", fontSize: "13px", letterSpacing: "6px", color: "#B24444", textTransform: "uppercase", fontWeight: "500" }}>Redline Design Group</span>
           </div>
           <div style={{ textAlign: "right" }}>
+            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: "11px", letterSpacing: "2px", color: "rgba(255,255,255,0.3)", textTransform: "uppercase", marginBottom: "4px" }}>
+              {(() => { const h = time.getHours(); return h < 12 ? "Good Morning" : h < 17 ? "Good Afternoon" : "Good Evening"; })()}
+            </div>
             <div style={{ fontFamily: "'Space Mono', monospace", fontSize: "28px", fontWeight: "700", color: "#FAFAF7" }}>
               {time.toLocaleDateString("en-US", { weekday: "long" })}
             </div>
@@ -2117,28 +2212,52 @@ Rules:
           </div>
         </div>
 
-        {/* MUST DO TODAY */}
+        {/* FIRES */}
         <div style={{
           marginBottom: "20px",
-          background: "linear-gradient(135deg, rgba(248,113,113,0.07) 0%, rgba(251,191,36,0.04) 100%)",
-          border: "1px solid rgba(248,113,113,0.18)", borderRadius: "18px",
-          padding: "20px 24px", position: "relative", overflow: "hidden",
+          background: firesExpanded
+            ? "linear-gradient(135deg, rgba(248,113,113,0.07) 0%, rgba(251,191,36,0.04) 100%)"
+            : "rgba(255,255,255,0.02)",
+          border: `1px solid ${remainingTodos > 0 ? "rgba(248,113,113,0.18)" : "rgba(255,255,255,0.06)"}`,
+          borderRadius: "18px",
+          position: "relative", overflow: "hidden",
           opacity: loaded ? 1 : 0, transform: loaded ? "translateY(0)" : "translateY(20px)",
           transition: "all 0.8s cubic-bezier(0.4,0,0.2,1) 0.05s",
         }}>
-          <div style={{ position: "absolute", top: 0, left: 0, width: "4px", height: "100%", background: remainingTodos > 0 ? "linear-gradient(180deg, #F87171, #FBBF24)" : "#4ADE80", borderRadius: "4px 0 0 4px" }} />
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+          {firesExpanded && <div style={{ position: "absolute", top: 0, left: 0, width: "4px", height: "100%", background: remainingTodos > 0 ? "linear-gradient(180deg, #F87171, #FBBF24)" : "#4ADE80", borderRadius: "4px 0 0 4px" }} />}
+
+          {/* Collapsible header */}
+          <div onClick={() => setFiresExpanded(prev => !prev)} style={{
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+            padding: firesExpanded ? "16px 24px 0 24px" : "12px 20px", cursor: "pointer", transition: "background 0.2s",
+          }}
+            onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.025)"}
+            onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+              <span style={{ fontSize: "16px", display: "inline-block", filter: remainingTodos > 0 ? "none" : "grayscale(1) opacity(0.4)", animation: remainingTodos > 0 ? "flamePulse 2s ease-in-out infinite" : "none" }}>🔥</span>
               <div style={{ fontFamily: "'Space Mono', monospace", fontSize: "12px", letterSpacing: "3px", color: remainingTodos > 0 ? "#F87171" : "#4ADE80", textTransform: "uppercase", fontWeight: "700" }}>
-                {remainingTodos > 0 ? "Must Do Today" : "All Clear"}
+                {remainingTodos > 0 ? "Fires" : "All Clear"}
               </div>
               {remainingTodos > 0 && (
-                <div style={{ background: "rgba(248,113,113,0.15)", border: "1px solid rgba(248,113,113,0.3)", borderRadius: "20px", padding: "2px 10px", fontFamily: "'Space Mono', monospace", fontSize: "12px", color: "#F87171", fontWeight: "700" }}>{remainingTodos}</div>
+                <div style={{ background: "rgba(248,113,113,0.15)", border: "1px solid rgba(248,113,113,0.3)", borderRadius: "20px", padding: "1px 9px", fontFamily: "'Space Mono', monospace", fontSize: "11px", color: "#F87171", fontWeight: "700" }}>{remainingTodos}</div>
               )}
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+              {!firesExpanded && (
+                <span style={{ fontFamily: "'Space Mono', monospace", fontSize: "9px", color: "rgba(255,255,255,0.25)" }}>{todos.filter(t => t.done).length}/{todos.length} complete</span>
+              )}
+              <span style={{ color: "rgba(255,255,255,0.25)", fontSize: "11px", transition: "transform 0.3s", transform: firesExpanded ? "rotate(180deg)" : "rotate(0)" }}>▼</span>
+            </div>
+          </div>
+
+          {/* Expanded content */}
+          {firesExpanded && (
+          <div style={{ padding: "12px 24px 20px 24px" }}>
+          <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", marginBottom: "10px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
               {archivedHotTasks.length > 0 && (
-                <button onClick={() => setShowArchive(a => !a)} style={{
+                <button onClick={(e) => { e.stopPropagation(); setShowArchive(a => !a); }} style={{
                   background: showArchive ? "rgba(232,200,114,0.1)" : "rgba(255,255,255,0.03)",
                   border: `1px solid ${showArchive ? "rgba(232,200,114,0.3)" : "rgba(255,255,255,0.07)"}`,
                   borderRadius: "8px", padding: "3px 10px", cursor: "pointer",
@@ -2153,14 +2272,49 @@ Rules:
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
             {todos.map((todo) => (
-              <div key={todo.id} onClick={() => toggleTodo(todo.id)} style={{
+              <div key={todo.id}
+                draggable={!todo.done}
+                onDragStart={(e) => {
+                  setDragTaskId(todo.id);
+                  e.dataTransfer.effectAllowed = "move";
+                  setTimeout(() => { try { e.currentTarget.style.opacity = "0.4"; } catch(_) {} }, 0);
+                }}
+                onDragEnd={(e) => {
+                  try { e.currentTarget.style.opacity = "1"; } catch(_) {}
+                  setDragTaskId(null);
+                  setDragOverTaskId(null);
+                }}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = "move";
+                  if (todo.id !== dragTaskId) setDragOverTaskId(todo.id);
+                }}
+                onDragLeave={() => setDragOverTaskId(null)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  if (dragTaskId && todo.id !== dragTaskId) {
+                    setTodos(prev => {
+                      const arr = [...prev];
+                      const fromIdx = arr.findIndex(t => t.id === dragTaskId);
+                      const toIdx = arr.findIndex(t => t.id === todo.id);
+                      const [moved] = arr.splice(fromIdx, 1);
+                      arr.splice(toIdx, 0, moved);
+                      return arr;
+                    });
+                  }
+                  setDragTaskId(null);
+                  setDragOverTaskId(null);
+                }}
+                onClick={() => toggleTodo(todo.id)} style={{
                 display: "flex", alignItems: "center", gap: "14px", padding: "10px 12px",
-                borderRadius: "10px", cursor: "pointer",
-                background: todo.done ? "rgba(74,222,128,0.04)" : "rgba(255,255,255,0.015)",
+                borderRadius: "10px", cursor: todo.done ? "pointer" : "grab",
+                background: dragOverTaskId === todo.id ? "rgba(114,184,232,0.08)" : todo.done ? "rgba(74,222,128,0.04)" : "rgba(255,255,255,0.015)",
                 transition: "all 0.3s ease", opacity: todo.done ? 0.4 : 1,
+                border: dragOverTaskId === todo.id ? "1px solid rgba(114,184,232,0.3)" : "1px solid transparent",
+                transform: dragOverTaskId === todo.id ? "scale(1.01)" : "none",
               }}
                 onMouseEnter={e => { e.currentTarget.style.background = todo.done ? "rgba(74,222,128,0.06)" : "rgba(255,255,255,0.04)"; const acts = e.currentTarget.querySelector("[data-actions]"); if (acts) acts.style.opacity = "1"; }}
-                onMouseLeave={e => { e.currentTarget.style.background = todo.done ? "rgba(74,222,128,0.04)" : "rgba(255,255,255,0.015)"; const acts = e.currentTarget.querySelector("[data-actions]"); if (acts) acts.style.opacity = "0"; }}
+                onMouseLeave={e => { e.currentTarget.style.background = todo.done ? "rgba(74,222,128,0.04)" : "rgba(255,255,255,0.015)"; e.currentTarget.style.border = "1px solid transparent"; const acts = e.currentTarget.querySelector("[data-actions]"); if (acts) acts.style.opacity = "0"; }}
               >
                 <div style={{
                   width: "22px", height: "22px", borderRadius: "6px", flexShrink: 0,
@@ -2172,7 +2326,16 @@ Rules:
                 </div>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: "14px", fontWeight: "500", color: todo.done ? "rgba(255,255,255,0.4)" : "#FAFAF7", textDecoration: todo.done ? "line-through" : "none" }}>{todo.text}</div>
-                  {todo.project && <div style={{ fontSize: "11px", color: "rgba(255,255,255,0.25)", marginTop: "2px" }}>{todo.project}</div>}
+                  {todo.project && (
+                    <div onClick={(e) => {
+                      e.stopPropagation();
+                      const match = projects.find(p => p.name === todo.project || todo.project.includes(p.name) || p.name.includes(todo.project));
+                      if (match) { setSelectedProject(match.id); }
+                    }} style={{ fontSize: "11px", color: "rgba(255,255,255,0.35)", marginTop: "2px", cursor: "pointer", transition: "color 0.2s", display: "inline-block" }}
+                      onMouseEnter={e => e.currentTarget.style.color = "#E8C872"}
+                      onMouseLeave={e => e.currentTarget.style.color = "rgba(255,255,255,0.35)"}
+                    >{todo.project} →</div>
+                  )}
                 </div>
                 {todo.hot && !todo.done && (
                   <div style={{ fontFamily: "'Space Mono', monospace", fontSize: "9px", letterSpacing: "1.5px", color: "#F87171", textTransform: "uppercase", fontWeight: "700", background: "rgba(248,113,113,0.1)", padding: "3px 8px", borderRadius: "4px" }}>HOT!!</div>
@@ -2232,6 +2395,63 @@ Rules:
             </div>
           )}
 
+          {/* Overdue Deliverable Suggestions */}
+          {overdueDeliverables.length > 0 && (
+            <div style={{ marginTop: "12px", borderTop: "1px solid rgba(255,255,255,0.06)", paddingTop: "12px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
+                <span style={{ fontSize: "12px" }}>⚠️</span>
+                <div style={{ fontFamily: "'Space Mono', monospace", fontSize: "9px", letterSpacing: "2px", color: "#FBBF24", textTransform: "uppercase" }}>
+                  Overdue Deliverables ({overdueDeliverables.length})
+                </div>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                {overdueDeliverables.map((item) => (
+                  <div key={item.key} style={{
+                    display: "flex", alignItems: "center", gap: "12px", padding: "8px 12px",
+                    borderRadius: "10px", background: "rgba(251,191,36,0.04)",
+                    border: "1px solid rgba(251,191,36,0.12)", transition: "all 0.2s",
+                  }}
+                    onMouseEnter={e => e.currentTarget.style.background = "rgba(251,191,36,0.08)"}
+                    onMouseLeave={e => e.currentTarget.style.background = "rgba(251,191,36,0.04)"}
+                  >
+                    <div style={{ fontSize: "14px" }}>{item.projectIcon}</div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: "13px", fontWeight: "500", color: "#FBBF24" }}>{item.deliverableName}</div>
+                      <div onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedProject(item.projectId);
+                      }} style={{ fontSize: "11px", color: "rgba(255,255,255,0.35)", marginTop: "1px", cursor: "pointer", display: "inline-block", transition: "color 0.2s" }}
+                        onMouseEnter={e => e.currentTarget.style.color = "#E8C872"}
+                        onMouseLeave={e => e.currentTarget.style.color = "rgba(255,255,255,0.35)"}
+                      >{item.projectName} →</div>
+                    </div>
+                    <div style={{ fontFamily: "'Space Mono', monospace", fontSize: "10px", color: "rgba(248,113,113,0.7)", flexShrink: 0 }}>
+                      {Math.abs(daysUntil(item.due))}d overdue
+                    </div>
+                    <div style={{ display: "flex", gap: "4px", flexShrink: 0 }}>
+                      <button onClick={() => promoteOverdueToFire(item)} title="Add as fire" style={{
+                        background: "rgba(248,113,113,0.1)", border: "1px solid rgba(248,113,113,0.25)",
+                        borderRadius: "6px", padding: "4px 8px", cursor: "pointer", fontSize: "10px",
+                        color: "#F87171", fontFamily: "'Space Mono', monospace", letterSpacing: "0.5px", transition: "all 0.2s",
+                      }}
+                        onMouseEnter={e => { e.currentTarget.style.background = "rgba(248,113,113,0.2)"; }}
+                        onMouseLeave={e => { e.currentTarget.style.background = "rgba(248,113,113,0.1)"; }}
+                      >🔥 Add</button>
+                      <button onClick={() => dismissOverdue(item.key)} title="Dismiss" style={{
+                        background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)",
+                        borderRadius: "6px", padding: "4px 6px", cursor: "pointer", fontSize: "10px",
+                        color: "rgba(255,255,255,0.3)", transition: "all 0.2s",
+                      }}
+                        onMouseEnter={e => e.currentTarget.style.color = "rgba(255,255,255,0.6)"}
+                        onMouseLeave={e => e.currentTarget.style.color = "rgba(255,255,255,0.3)"}
+                      >✕</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Add Task Input */}
           <div style={{ display: "flex", gap: "8px", marginTop: "10px", alignItems: "center" }}>
             <div onClick={() => setNewTaskHot(!newTaskHot)} style={{
@@ -2243,10 +2463,11 @@ Rules:
               {newTaskHot && <span style={{ fontSize: "11px" }}>🔥</span>}
             </div>
             <input
+              ref={taskInputRef}
               value={newTaskText}
               onChange={e => setNewTaskText(e.target.value)}
               onKeyDown={e => e.key === "Enter" && addTask()}
-              placeholder="Add a task..."
+              placeholder="Add a task... ( / to focus )"
               style={{
                 flex: 1, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)",
                 borderRadius: "10px", padding: "9px 14px", color: "#FAFAF7", fontSize: "13px",
@@ -2263,6 +2484,18 @@ Rules:
               fontFamily: "'Space Mono', monospace", letterSpacing: "1px", transition: "all 0.2s",
             }}>ADD</button>
           </div>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: "12px", marginTop: "8px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+              <kbd style={{ fontFamily: "'Space Mono', monospace", fontSize: "9px", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "4px", padding: "1px 6px", color: "rgba(255,255,255,0.3)", lineHeight: "16px" }}>/</kbd>
+              <span style={{ fontFamily: "'Space Mono', monospace", fontSize: "9px", color: "rgba(255,255,255,0.2)" }}>focus</span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+              <kbd style={{ fontFamily: "'Space Mono', monospace", fontSize: "9px", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "4px", padding: "1px 6px", color: "rgba(255,255,255,0.3)", lineHeight: "16px" }}>esc</kbd>
+              <span style={{ fontFamily: "'Space Mono', monospace", fontSize: "9px", color: "rgba(255,255,255,0.2)" }}>collapse</span>
+            </div>
+          </div>
+          </div>
+          )}
         </div>
 
         {/* ISSUES BAR — collapsible, grouped by project */}
@@ -3371,7 +3604,7 @@ Rules:
                   >↻</button>
                 </div>
               </div>
-              <style>{`@keyframes pulse { 0%,100%{opacity:0.4} 50%{opacity:1} }`}</style>
+              <style>{`@keyframes pulse { 0%,100%{opacity:0.4} 50%{opacity:1} } @keyframes flamePulse { 0%,100%{transform:scale(1)} 50%{transform:scale(1.15)} }`}</style>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: "4px" }}>
                 {weekDates.map((date, i) => {
                   const dateStr = date.toISOString().split("T")[0];
